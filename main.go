@@ -19,10 +19,12 @@ func main() {
 	case "init":
 		Init()
 	case "file":
-		if len(os.Args) < 3 {
-			log.Fatal("usage: mini-git file <file-path>")
+		if len(os.Args) < 4 {
+			log.Fatal("usage: mini-git file <file-path> <file-type>")
 		}
-		HashObject(os.Args[2])
+		filePath := os.Args[2]
+		objType := os.Args[3]
+		HashObject(filePath, objType)
 	case "cat":
 		if len(os.Args) < 3 {
 			log.Fatal("usage: mini-git cat file-path")
@@ -47,30 +49,36 @@ func Init() {
 	fmt.Println("Initialized mini-git repository in: ", path)
 }
 
-func HashObject(filaPath string) {
+func HashObject(filaPath, objType string) {
+	header := []byte(objType + "\x00")
 	data, err := os.ReadFile(filaPath)
 	check(err)
 
+	obj := append(header, data...)
+
 	hasher := sha1.New()
-	_, err = hasher.Write(data)
+	_, err = hasher.Write(obj)
 	check(err)
 
 	hash := hasher.Sum(nil)
 	hashHex := hex.EncodeToString(hash)
 
-	objectsDir := GitDir + "/objects"
+	objectsDir := fmt.Sprintf("%s/objects/%s", GitDir, hashHex[:2])
 	err = os.MkdirAll(objectsDir, 0755)
 	check(err)
 
-	hashFile := fmt.Sprintf("%s/%s", objectsDir, hashHex)
-	err = os.WriteFile(hashFile, data, 0644)
+	hashFile := fmt.Sprintf("%s/%s", objectsDir, hashHex[2:])
+	err = os.WriteFile(hashFile, obj, 0644)
 	check(err)
 
 	fmt.Printf("Hashed object %s: %s\n", filaPath, hashHex)
 }
 
 func catFile(oid string) {
-	oidFilePath := GitDir + "/objects/" + oid
+	subDir := oid[:2]
+	fileName := oid[2:]
+
+	oidFilePath := fmt.Sprintf("%s/objects/%s/%s", GitDir, subDir, fileName)
 	data, err := os.ReadFile(oidFilePath)
 	check(err)
 	fmt.Println(string(data))
