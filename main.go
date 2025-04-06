@@ -23,6 +23,11 @@ func main() {
 			log.Fatal("usage: mini-git file <file-path>")
 		}
 		HashObject(os.Args[2])
+	case "cat":
+		if len(os.Args) < 3 {
+			log.Fatal("usage: mini-git cat file-path")
+		}
+		catFile(os.Args[2])
 	default:
 		log.Fatal("unknown command")
 	}
@@ -62,4 +67,11 @@ func HashObject(filaPath string) {
 	check(err)
 
 	fmt.Printf("Hashed object %s: %s\n", filaPath, hashHex)
+}
+
+func catFile(oid string) {
+	oidFilePath := GitDir + "/objects/" + oid
+	data, err := os.ReadFile(oidFilePath)
+	check(err)
+	fmt.Println(string(data))
 }
