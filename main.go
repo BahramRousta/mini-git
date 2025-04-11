@@ -230,7 +230,17 @@ func commit(message string) (string, error) {
 	commitMsg += message
 
 	commitData := []byte(commitMsg)
-	commitOid, ere := hashBytesAsObject(ObjectTypeCommit, commitData)
-	check(ere)
+	commitOid, err := hashBytesAsObject(ObjectTypeCommit, commitData)
+	check(err)
+	err = setHead(commitOid)
+	if err != nil {
+		return "", err
+	}
 	return commitOid, nil
+}
+
+func setHead(oid string) error {
+	// For simplicity, write directly to HEAD (consider refs/heads/main for a full implementation)
+	headPath := filepath.Join(GitDir, "HEAD")
+	return os.WriteFile(headPath, []byte(oid), 0644)
 }
