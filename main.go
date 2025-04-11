@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha1"
 	"encoding/hex"
 	"fmt"
@@ -10,35 +11,58 @@ import (
 	"strings"
 )
 
-const GitDir = ".mini-git"
+const (
+	GitDir           = ".mini-git"
+	ObjectTypeBlob   = "blob"
+	ObjectTypeCommit = "commit"
+	ObjectTypeTree   = "tree"
+)
 
 func main() {
 	if len(os.Args) < 2 {
 		log.Fatal("usage: mini-git <command> [args]")
 	}
 
-	switch os.Args[1] {
+	command := os.Args[1]
+	switch command {
 	case "init":
-		Init()
-	case "file":
-		if len(os.Args) < 4 {
-			log.Fatal("usage: mini-git file <file-path> <file-type>")
+		cmdInit()
+	case "hash-object":
+		if len(os.Args) < 3 {
+			log.Fatalf("Usage: %s hash-object <file-path>", os.Args[0])
 		}
 		filePath := os.Args[2]
-		objType := os.Args[3]
-		HashObject(filePath, objType)
-	case "cat":
-		if len(os.Args) < 3 {
-			log.Fatal("usage: mini-git cat file-path")
+		oid, err := cmdHashObject(filePath)
+		if err != nil {
+			log.Fatalf("Error hashing object %s: %v", filePath, err)
 		}
-		catFile(os.Args[2])
+		fmt.Println(oid)
+	case "cat-file":
+		if len(os.Args) < 3 {
+			log.Fatalf("Usage: %s cat-file <object-id>", os.Args[0])
+		}
+		oid := os.Args[2]
+		content, err := cmdCatFile(oid)
+		if err != nil {
+			log.Fatalf("Error reading object %s: %v", oid, err)
+		}
+		fmt.Print(content)
 	case "tree":
-		oid, err := writeTree(os.Args[2])
+		if len(os.Args) < 3 {
+			log.Fatalf("Usage: %s tree <path>", os.Args[0])
+		}
+		oid, err := cmdWriteTree(os.Args[2])
 		if err != nil {
 			log.Fatalf("Error writing tree: %v", err)
 			return
 		}
 		fmt.Printf("Tree object: %s\n", oid)
+	case "commit":
+		oid, err := commit(os.Args[2])
+		if err != nil {
+			log.Fatalf("Error writing commit: %v", err)
+		}
+		fmt.Printf("Commit object: %s\n", oid)
 	default:
 		log.Fatal("unknown command")
 	}
@@ -50,7 +74,7 @@ func check(e error) {
 	}
 }
 
-func Init() {
+func cmdInit() {
 	err := os.Mkdir(GitDir, 0755)
 	check(err)
 	path, err := os.Getwd()
@@ -58,32 +82,52 @@ func Init() {
 	fmt.Println("Initialized mini-git repository in: ", path)
 }
 
-func HashObject(filaPath, objType string) string {
-	header := []byte(objType + "\x00")
-	data, err := os.ReadFile(filaPath)
+func cmdHashObject(filePath string) (string, error) {
+	data, err := os.ReadFile(filePath)
 	check(err)
-
-	obj := append(header, data...)
-
-	hasher := sha1.New()
-	_, err = hasher.Write(obj)
-	check(err)
-
-	hash := hasher.Sum(nil)
-	hashHex := hex.EncodeToString(hash)
-
-	objectsDir := fmt.Sprintf("%s/objects/%s", GitDir, hashHex[:2])
-	err = os.MkdirAll(objectsDir, 0755)
-	check(err)
-
-	hashFile := fmt.Sprintf("%s/%s", objectsDir, hashHex[2:])
-	err = os.WriteFile(hashFile, obj, 0644)
-	check(err)
-
-	return hashHex
+	return hashBytesAsObject(ObjectTypeBlob, data)
 }
 
-func catFile(oid string) {
+func hashBytesAsObject(objectType string, data []byte) (string, error) {
+	header := []byte(fmt.Sprintf("%s %d\x00", objectType, len(data)))
+	fullObject := append(header, data...)
+
+	hasher := sha1.New()
+	_, err := hasher.Write(fullObject)
+	check(err)
+
+	hashBytes := hasher.Sum(nil)
+	oid := hex.EncodeToString(hashBytes)
+
+	objPath, err := getObjectPath(oid)
+	check(err)
+
+	objDir := filepath.Dir(objPath)
+	err = os.MkdirAll(objDir, 0755)
+	check(err)
+
+	err = os.WriteFile(objPath, fullObject, 0644)
+	check(err)
+	return oid, nil
+}
+
+func cmdCatFile(oid string) (string, error) {
+	objPath, err := getObjectPath(oid)
+	check(err)
+
+	fullObject, err := os.ReadFile(objPath)
+	check(err)
+
+	nullByteIndex := bytes.IndexByte(fullObject, 0)
+	if nullByteIndex == -1 {
+		return "", fmt.Errorf("malformed object file: missing null byte separator in %s", objPath)
+	}
+
+	content := fullObject[nullByteIndex+1:]
+	return string(content), nil
+}
+
+func getObjectPath(oid string) (string, error) {
 	if len(oid) < 2 {
 		log.Fatalf("Invalid object ID: %s", oid)
 	}
@@ -91,19 +135,16 @@ func catFile(oid string) {
 	subDir := oid[:2]
 	fileName := oid[2:]
 
-	oidFilePath := fmt.Sprintf("%s/objects/%s/%s", GitDir, subDir, fileName)
-	data, err := os.ReadFile(oidFilePath)
-	check(err)
-	parts := strings.SplitN(string(data), "\x00", 2)
-
-	if len(parts) != 2 {
-		fmt.Println(string(data))
-	} else {
-		fmt.Println(parts[1])
-	}
+	return filepath.Join(GitDir, "objects", subDir, fileName), nil
 }
 
-func writeTree(directory string) (string, error) {
+type treeEntry struct {
+	name string
+	typ  string
+	oid  string
+}
+
+func cmdWriteTree(directory string) (string, error) {
 	pathDir := filepath.Clean(directory)
 
 	dir, err := os.Open(pathDir)
@@ -113,11 +154,6 @@ func writeTree(directory string) (string, error) {
 	entries, err := dir.ReadDir(-1)
 	check(err)
 
-	type treeEntry struct {
-		name string
-		typ  string
-		oid  string
-	}
 	var treeEntries []treeEntry
 
 	for _, entry := range entries {
@@ -132,24 +168,25 @@ func writeTree(directory string) (string, error) {
 			if info.Mode()&os.ModeSymlink != 0 {
 				continue
 			}
-			oid := HashObject(fullPath, "blob")
+			blobOID, err := cmdHashObject(fullPath)
+			check(err)
 
 			treeEntries = append(treeEntries, treeEntry{
 				name: entry.Name(),
-				oid:  oid,
-				typ:  "blob",
+				oid:  blobOID,
+				typ:  ObjectTypeBlob,
 			})
 
 		} else {
-			oid, err := writeTree(fullPath)
+			subTreeOID, err := cmdWriteTree(fullPath)
 			if err != nil {
 				return "", err
 			}
-			if oid != "" {
+			if subTreeOID != "" {
 				treeEntries = append(treeEntries, treeEntry{
 					name: entry.Name(),
-					oid:  oid,
-					typ:  "tree",
+					oid:  subTreeOID,
+					typ:  ObjectTypeTree,
 				})
 			}
 		}
@@ -164,22 +201,11 @@ func writeTree(directory string) (string, error) {
 		fmt.Fprintf(&treeContent, "%s %s %s\n", entry.typ, entry.oid, entry.name)
 	}
 
-	treeBytes := []byte(treeContent.String())
-	hasher := sha1.New()
-	_, err = hasher.Write(append([]byte("tree\x00"), treeBytes...))
-	check(err)
-	hash := hasher.Sum(nil)
-	oid := hex.EncodeToString(hash)
-
-	objectsDir := filepath.Join(GitDir, "objects", oid[:2])
-	err = os.MkdirAll(objectsDir, 0755)
+	treeData := []byte(treeContent.String())
+	treeOID, err := hashBytesAsObject(ObjectTypeTree, treeData)
 	check(err)
 
-	hashFile := filepath.Join(objectsDir, oid[2:])
-	err = os.WriteFile(hashFile, append([]byte("tree\x00"), treeBytes...), 0644)
-	check(err)
-
-	return oid, nil
+	return treeOID, nil
 }
 
 func isIgnored(path string) bool {
@@ -191,4 +217,20 @@ func isIgnored(path string) bool {
 		}
 	}
 	return false
+}
+
+func commit(message string) (string, error) {
+	treeOid, err := cmdWriteTree(".")
+	if err != nil {
+		return "", err
+	}
+
+	commitMsg := fmt.Sprintf("tree %s\n", treeOid)
+	commitMsg += "\n"
+	commitMsg += message
+
+	commitData := []byte(commitMsg)
+	commitOid, ere := hashBytesAsObject(ObjectTypeCommit, commitData)
+	check(ere)
+	return commitOid, nil
 }
