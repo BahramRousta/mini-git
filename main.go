@@ -225,11 +225,22 @@ func commit(message string) (string, error) {
 		return "", err
 	}
 
-	commitMsg := fmt.Sprintf("tree %s\n", treeOid)
-	commitMsg += "\n"
-	commitMsg += message
+	var commitMsg strings.Builder
+	fmt.Sprintf("tree %s\n", treeOid)
 
-	commitData := []byte(commitMsg)
+	head, err := getHead()
+	if err != nil {
+		return "", err
+	}
+	if head != "" {
+		fmt.Sprintf("parent %s\n", head)
+	}
+
+	commitMsg.WriteString("\n")
+	commitMsg.WriteString(message)
+	commitMsg.WriteString("\n")
+
+	commitData := []byte(commitMsg.String())
 	commitOid, err := hashBytesAsObject(ObjectTypeCommit, commitData)
 	check(err)
 	err = setHead(commitOid)
@@ -240,7 +251,21 @@ func commit(message string) (string, error) {
 }
 
 func setHead(oid string) error {
-	// For simplicity, write directly to HEAD (consider refs/heads/main for a full implementation)
 	headPath := filepath.Join(GitDir, "HEAD")
 	return os.WriteFile(headPath, []byte(oid), 0644)
+}
+
+func getHead() (string, error) {
+	headPath := filepath.Join(GitDir, "HEAD")
+
+	data, err := os.ReadFile(headPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+
+	oid := string(data)
+	return oid, nil
 }
